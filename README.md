@@ -1,5 +1,6 @@
 ## Q Learning
 
+```
 Episode: 100, Avg Reward: 24.19, Avg Steps: 24.19, Epsilon: 0.606
 Episode: 200, Avg Reward: 22.11, Avg Steps: 22.11, Epsilon: 0.367
 Episode: 300, Avg Reward: 21.89, Avg Steps: 21.89, Epsilon: 0.222
@@ -14,11 +15,12 @@ Episode: 1000, Avg Reward: 29.41, Avg Steps: 29.41, Epsilon: 0.010
 Evaluation Results:
 Average Reward: 28.90
 Average Steps: 28.90
+```
 
 ![](q_learning_cart_pole.mov "After 100 episodes")
 
 ## REINFORCE
-
+```
 Episode 100, Average Reward: 67.66
 Episode 200, Average Reward: 46.37
 Episode 300, Average Reward: 43.93
@@ -31,6 +33,7 @@ Episode 900, Average Reward: 9.47
 Episode 1000, Average Reward: 9.44
 
 Evaluation over 10 episodes: 9.50
+```
 
 ![](reinforce_cart_pole.mov )
 
