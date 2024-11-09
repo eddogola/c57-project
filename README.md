@@ -38,5 +38,3 @@ Evaluation over 10 episodes: 9.50
 ![](reinforce_cart_pole.mov )
 
 ![REINFORCE episode rewards](reinforce_episode_reward.png "REINFORCE episode reward")
-
-:D
