@@ -38,3 +38,19 @@ Evaluation over 10 episodes: 9.50
 ![](reinforce_cart_pole.mov )
 
 ![REINFORCE episode rewards](reinforce_episode_reward.png "REINFORCE episode reward")
+
+## TRPO
+```
+Episode 100, Average Reward: 22.71
+Episode 200, Average Reward: 23.82
+Episode 300, Average Reward: 217.97
+Episode 400, Average Reward: 227.38
+Episode 500, Average Reward: 232.61
+Episode 600, Average Reward: 221.12
+Episode 700, Average Reward: 228.63
+Episode 800, Average Reward: 222.94
+Episode 900, Average Reward: 229.54
+Episode 1000, Average Reward: 226.63
+
+Evaluation over 10 episodes: 228.62
+```
