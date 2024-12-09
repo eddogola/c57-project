@@ -6,6 +6,7 @@ import torch.optim as optim
 from torch.distributions import Categorical
 import matplotlib.pyplot as plt
 
+
 class ActorCriticNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(ActorCriticNetwork, self).__init__()
@@ -24,158 +25,159 @@ class ActorCriticNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 1)
         )
-    
+
     def forward(self, x):
         shared_output = self.shared(x)
         policy_probs = self.actor(shared_output)
         value = self.critic(shared_output)
         return policy_probs, value
 
+
 class A2C:
-    def __init__(self, env_name='CartPole-v1', hidden_dim=128, learning_rate=0.01, gamma=0.99, window_size=50, tolerance=1.0):
+    def __init__(self, env_name='CartPole-v1', hidden_dim=256, learning_rate=0.001, gamma=0.99, window_size=100, gradient_threshold=0.001):
         self.env = gym.make(env_name)
         self.input_dim = self.env.observation_space.shape[0]
         self.output_dim = self.env.action_space.n
         self.gamma = gamma
-        
-        # Initialize Actor-Critic network
+
         self.actor_critic = ActorCriticNetwork(self.input_dim, hidden_dim, self.output_dim)
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
-        
-        # For tracking training progress
+
         self.episode_rewards = []
         self.rolling_avg_rewards = []
+        self.window_size = window_size
+        self.gradient_threshold = gradient_threshold
         self.convergence_episode = None
-        self.window_size = window_size  # Rolling average window size
-        self.tolerance = tolerance  # Convergence tolerance
-    
-    def select_action(self, state):
-        state = torch.FloatTensor(state)
-        policy_probs, _ = self.actor_critic(state)
-        distribution = Categorical(policy_probs)
-        action = distribution.sample()
-        return action.item(), distribution.log_prob(action)
-    
+
     def calculate_advantages(self, rewards, values, next_value, dones):
+        """Calculate discounted returns and advantages."""
         returns = []
         G = next_value
         for r, done in zip(reversed(rewards), reversed(dones)):
             G = r + self.gamma * G * (1 - done)
             returns.insert(0, G)
-        returns = torch.tensor(returns)
+        returns = torch.tensor(returns, dtype=torch.float32)
         advantages = returns - values
         return returns, advantages
-    
+
+    def calculate_gradient(self):
+        """Calculate the gradient of the rolling average."""
+        if len(self.rolling_avg_rewards) < self.window_size:
+            return None
+        x = np.arange(self.window_size)
+        y = np.array(self.rolling_avg_rewards[-self.window_size:])
+        gradient = np.polyfit(x, y, 1)[0]  # Fit a linear model and return its slope
+        return gradient
+
     def check_convergence(self):
-        """Check if the rolling average has converged."""
-        if len(self.rolling_avg_rewards) >= self.window_size:
-            recent_avg = np.mean(self.rolling_avg_rewards[-self.window_size:])
-            if abs(recent_avg - self.rolling_avg_rewards[-1]) <= self.tolerance:
-                return True
+        """Check if the gradient of the rolling average is below the threshold."""
+        if len(self.rolling_avg_rewards) < max(self.window_size, 200):  # Require a minimum number of episodes
+            return False
+
+        gradient = self.calculate_gradient()
+        if gradient is not None and abs(gradient) < self.gradient_threshold:
+            return True
         return False
-    
+
+
     def train(self, num_episodes=1000, print_interval=100):
         for episode in range(num_episodes):
             state, _ = self.env.reset()
+            done = False
             rewards, log_probs, values, dones = [], [], [], []
             episode_reward = 0
-            
-            while True:
-                action, log_prob = self.select_action(state)
-                next_state, reward, terminated, truncated, _ = self.env.step(action)
-                done = terminated or truncated
-                
-                _, value = self.actor_critic(torch.FloatTensor(state))
+
+            while not done:
+                state_tensor = torch.FloatTensor(state).unsqueeze(0)
+                policy_probs, value = self.actor_critic(state_tensor)
+                distribution = Categorical(policy_probs)
+                action = distribution.sample()
+
+                next_state, reward, done, _, _ = self.env.step(action.item())
                 rewards.append(reward)
-                log_probs.append(log_prob)
+                log_probs.append(distribution.log_prob(action))
                 values.append(value)
                 dones.append(done)
                 episode_reward += reward
-                
-                if done:
-                    _, next_value = self.actor_critic(torch.FloatTensor(next_state))
-                    break
-                
                 state = next_state
-            
-            values = torch.cat(values).squeeze()
-            returns, advantages = self.calculate_advantages(rewards, values, next_value.item(), dones)
-            
-            policy_loss = []
-            value_loss = []
-            for log_prob, advantage, value, ret in zip(log_probs, advantages, values, returns):
-                policy_loss.append(-log_prob * advantage)
-                value_loss.append((value - ret) ** 2)
-            
-            policy_loss = torch.stack(policy_loss).sum()
-            value_loss = torch.stack(value_loss).sum()
+
+            # Bootstrap value for the final state
+            next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0)
+            _, next_value = self.actor_critic(next_state_tensor)
+            returns, advantages = self.calculate_advantages(rewards, torch.cat(values).squeeze(), next_value.item(), dones)
+
+            # Compute losses
+            policy_loss = -(torch.stack(log_probs) * advantages.detach()).sum()
+            value_loss = advantages.pow(2).mean()
             loss = policy_loss + value_loss
-            
+
+            # Optimize
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-            
+
             self.episode_rewards.append(episode_reward)
             rolling_avg = np.mean(self.episode_rewards[-self.window_size:])
             self.rolling_avg_rewards.append(rolling_avg)
-            
-            # Check for convergence
+
             if self.convergence_episode is None and self.check_convergence():
                 self.convergence_episode = episode + 1
-            
+
             if (episode + 1) % print_interval == 0:
                 avg_reward = np.mean(self.episode_rewards[-print_interval:])
                 print(f"Episode {episode + 1}, Average Reward: {avg_reward:.2f}")
-    
+
     def plot_training_progress(self):
+        """Plot training progress with convergence metrics."""
         plt.figure(figsize=(10, 5))
-        plt.plot(self.episode_rewards, label='Episode Reward')
-        plt.plot(self.rolling_avg_rewards, label=f'Rolling Avg (window={self.window_size})', linewidth=2)
+        plt.plot(self.episode_rewards, label="Episode Rewards")
+        plt.plot(self.rolling_avg_rewards, label=f"Rolling Avg (window={self.window_size})", linewidth=2)
         if self.convergence_episode:
-            plt.axvline(self.convergence_episode, color='r', linestyle='--', label='Convergence Point')
-        plt.title('Training Progress')
-        plt.xlabel('Episode')
-        plt.ylabel('Reward')
+            plt.axvline(self.convergence_episode, color='r', linestyle='--', label="Convergence Point")
+        plt.title("Training Progress")
+        plt.xlabel("Episode")
+        plt.ylabel("Reward")
         plt.legend()
         plt.grid(True)
         plt.show()
 
     def evaluate(self, num_episodes=10, render=False):
-        env = gym.make('CartPole-v1', render_mode='human') if render else self.env
         eval_rewards = []
+        env = gym.make('CartPole-v1', render_mode='human') if render else self.env
+
         for _ in range(num_episodes):
             state, _ = env.reset()
-            episode_reward = 0
             done = False
+            episode_reward = 0
+
             while not done:
-                state = torch.FloatTensor(state)
+                state_tensor = torch.FloatTensor(state).unsqueeze(0)
                 with torch.no_grad():
-                    policy_probs, _ = self.actor_critic(state)
-                action = torch.argmax(policy_probs).item()
-                state, reward, terminated, truncated, _ = env.step(action)
-                done = terminated or truncated
+                    policy_probs, _ = self.actor_critic(state_tensor)
+                    action = torch.argmax(policy_probs).item()
+                state, reward, done, _, _ = env.step(action)
                 episode_reward += reward
             eval_rewards.append(episode_reward)
-        avg_reward = np.mean(eval_rewards)
-        print(f"\nEvaluation over {num_episodes} episodes: {avg_reward:.2f}")
-        return avg_reward
-    
+
+        print(f"Evaluation Average Reward: {np.mean(eval_rewards):.2f}")
+
     def save_policy(self, path='a2c_cartpole.pth'):
         torch.save(self.actor_critic.state_dict(), path)
-    
+
     def load_policy(self, path='a2c_cartpole.pth'):
         self.actor_critic.load_state_dict(torch.load(path))
 
+
 def main():
-    agent = A2C(hidden_dim=128, learning_rate=0.01)
+    agent = A2C()
     agent.train(num_episodes=1000)
     if agent.convergence_episode:
-        print(f"Convergence achieved at episode: {agent.convergence_episode}")
+        print(f"Convergence achieved at episode {agent.convergence_episode}.")
     else:
-        print("Convergence not achieved during training.")
+        print("Convergence not achieved.")
     agent.plot_training_progress()
     agent.evaluate(num_episodes=10, render=False)
-    agent.save_policy()
+
 
 if __name__ == "__main__":
     main()

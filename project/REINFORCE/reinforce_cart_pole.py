@@ -7,41 +7,29 @@ from torch.distributions import Categorical
 import matplotlib.pyplot as plt
 
 
-class ActorCriticNetwork(nn.Module):
+class PolicyNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
-        super(ActorCriticNetwork, self).__init__()
-        self.shared = nn.Sequential(
+        super(PolicyNetwork, self).__init__()
+        self.network = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
-            nn.ReLU()
-        )
-        self.actor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, output_dim),
             nn.Softmax(dim=-1)
         )
-        self.critic = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-
+    
     def forward(self, x):
-        shared_output = self.shared(x)
-        policy_probs = self.actor(shared_output)
-        value = self.critic(shared_output)
-        return policy_probs, value
+        return self.network(x)
 
 
-class A2C:
-    def __init__(self, env_name='LunarLander-v2', hidden_dim=256, learning_rate=0.001, gamma=0.99, window_size=50, gradient_threshold=0.01):
+class REINFORCE:
+    def __init__(self, env_name='CartPole-v1', hidden_dim=128, learning_rate=0.01, gamma=0.99, window_size=100, gradient_threshold=0.005):
         self.env = gym.make(env_name)
         self.input_dim = self.env.observation_space.shape[0]
         self.output_dim = self.env.action_space.n
         self.gamma = gamma
 
-        self.actor_critic = ActorCriticNetwork(self.input_dim, hidden_dim, self.output_dim)
-        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
+        self.policy = PolicyNetwork(self.input_dim, hidden_dim, self.output_dim)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
 
         self.episode_rewards = []
         self.rolling_avg_rewards = []
@@ -49,65 +37,63 @@ class A2C:
         self.gradient_threshold = gradient_threshold
         self.convergence_episode = None
 
-    def calculate_advantages(self, rewards, values, next_value, dones):
-        """Calculate discounted returns and advantages."""
-        returns = []
-        G = next_value
-        for r, done in zip(reversed(rewards), reversed(dones)):
-            G = r + self.gamma * G * (1 - done)
-            returns.insert(0, G)
-        returns = torch.tensor(returns, dtype=torch.float32)
-        advantages = returns - values
-        return returns, advantages
-
     def calculate_gradient(self):
         """Calculate the gradient of the rolling average."""
         if len(self.rolling_avg_rewards) < self.window_size:
             return None
         x = np.arange(self.window_size)
         y = np.array(self.rolling_avg_rewards[-self.window_size:])
-        gradient = np.polyfit(x, y, 1)[0]  # Fit a linear model and return its slope
+        gradient = np.polyfit(x, y, 1)[0]
         return gradient
 
     def check_convergence(self):
         """Check if the gradient of the rolling average is below the threshold."""
+        if len(self.rolling_avg_rewards) < max(self.window_size, 200):  # Require a minimum number of episodes
+            return False
+
         gradient = self.calculate_gradient()
         if gradient is not None and abs(gradient) < self.gradient_threshold:
             return True
         return False
 
-    def train(self, num_episodes=2000, print_interval=100):
+    def select_action(self, state):
+        """Select an action based on the policy."""
+        state = torch.FloatTensor(state)
+        probs = self.policy(state)
+        distribution = Categorical(probs)
+        action = distribution.sample()
+        return action.item(), distribution.log_prob(action)
+
+    def calculate_returns(self, rewards):
+        """Calculate discounted returns."""
+        returns = []
+        G = 0
+        for r in reversed(rewards):
+            G = r + self.gamma * G
+            returns.insert(0, G)
+        returns = torch.tensor(returns)
+        returns = (returns - returns.mean()) / (returns.std() + 1e-9)  # Normalize for stability
+        return returns
+
+    def train(self, num_episodes=1000, print_interval=100):
         for episode in range(num_episodes):
             state, _ = self.env.reset()
-            done = False
-            rewards, log_probs, values, dones = [], [], [], []
+            rewards, log_probs = [], []
             episode_reward = 0
+            done = False
 
             while not done:
-                state_tensor = torch.FloatTensor(state).unsqueeze(0)
-                policy_probs, value = self.actor_critic(state_tensor)
-                distribution = Categorical(policy_probs)
-                action = distribution.sample()
-
-                next_state, reward, done, truncated, _ = self.env.step(action.item())
+                action, log_prob = self.select_action(state)
+                next_state, reward, done, _, _ = self.env.step(action)
                 rewards.append(reward)
-                log_probs.append(distribution.log_prob(action))
-                values.append(value)
-                dones.append(done or truncated)
+                log_probs.append(log_prob)
                 episode_reward += reward
                 state = next_state
 
-            # Bootstrap value for the final state
-            next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0)
-            _, next_value = self.actor_critic(next_state_tensor)
-            returns, advantages = self.calculate_advantages(rewards, torch.cat(values).squeeze(), next_value.item(), dones)
+            returns = self.calculate_returns(rewards)
+            loss = -torch.stack(log_probs) * returns
+            loss = loss.sum()
 
-            # Compute losses
-            policy_loss = -(torch.stack(log_probs) * advantages.detach()).sum()
-            value_loss = advantages.pow(2).mean()
-            loss = policy_loss + value_loss
-
-            # Optimize
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -139,7 +125,7 @@ class A2C:
 
     def evaluate(self, num_episodes=10, render=False):
         eval_rewards = []
-        env = gym.make('LunarLander-v3', render_mode='human') if render else self.env
+        env = gym.make('CartPole-v1', render_mode='human') if render else self.env
 
         for _ in range(num_episodes):
             state, _ = env.reset()
@@ -147,26 +133,27 @@ class A2C:
             episode_reward = 0
 
             while not done:
-                state_tensor = torch.FloatTensor(state).unsqueeze(0)
+                state = torch.FloatTensor(state)
                 with torch.no_grad():
-                    policy_probs, _ = self.actor_critic(state_tensor)
-                    action = torch.argmax(policy_probs).item()
+                    probs = self.policy(state)
+                action = torch.argmax(probs).item()
                 state, reward, done, _, _ = env.step(action)
                 episode_reward += reward
             eval_rewards.append(episode_reward)
 
-        print(f"Evaluation Average Reward: {np.mean(eval_rewards):.2f}")
+        avg_reward = np.mean(eval_rewards)
+        print(f"Evaluation Average Reward: {avg_reward:.2f}")
 
-    def save_policy(self, path='a2c_lunarlander.pth'):
-        torch.save(self.actor_critic.state_dict(), path)
+    def save_policy(self, path='reinforce_cartpole.pth'):
+        torch.save(self.policy.state_dict(), path)
 
-    def load_policy(self, path='a2c_lunarlander.pth'):
-        self.actor_critic.load_state_dict(torch.load(path))
+    def load_policy(self, path='reinforce_cartpole.pth'):
+        self.policy.load_state_dict(torch.load(path))
 
 
 def main():
-    agent = A2C(env_name="LunarLander-v3")
-    agent.train(num_episodes=2000)
+    agent = REINFORCE()
+    agent.train(num_episodes=1000)
     if agent.convergence_episode:
         print(f"Convergence achieved at episode {agent.convergence_episode}.")
     else:
