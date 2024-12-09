@@ -39,7 +39,7 @@ class ActorCriticNetwork(nn.Module):
 
 
 class TRPO:
-    def __init__(self, env_name='LunarLander-v2', hidden_dim=128, learning_rate=0.01, max_d_kl=0.01, window_size=100, gradient_threshold=0.005):
+    def __init__(self, env_name='LunarLander-v3', hidden_dim=128, learning_rate=0.01, max_d_kl=0.01, window_size=100, gradient_threshold=0.005):
         self.env = gym.make(env_name)
         self.input_dim = self.env.observation_space.shape[0]  # 8 for LunarLander
         self.output_dim = self.env.action_space.n  # 4 discrete actions
@@ -209,7 +209,7 @@ class TRPO:
 
     def evaluate(self, num_episodes=10, render=False):
         """Evaluate the trained policy."""
-        env = gym.make('LunarLander-v2', render_mode='human') if render else self.env
+        env = gym.make('LunarLander-v3', render_mode='human') if render else self.env
         eval_rewards = []
         for _ in range(num_episodes):
             state, _ = env.reset()
