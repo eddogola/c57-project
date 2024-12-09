@@ -292,14 +292,17 @@ class TRPO:
 
 def main():
     # Create and train the agent
-    agent = TRPO(hidden_dim=128, learning_rate=0.01, max_d_kl=0.001)
+    # Create and train the agent
+    lr = 0.01
+    d_kl = 0.001
+    agent = TRPO(hidden_dim=128, learning_rate=lr, max_d_kl=d_kl)
     agent.train(num_episodes=1000)
     
     # Plot training progress
-    agent.plot_training_progress(path="../reward graphs/TRPO/trpo_lunar_lander_0_001")
+    agent.plot_training_progress(path=f"../reward graphs/TRPO/trpo_lunar_lander_{d_kl}_{lr}_2")
     
     # Save the trained policy
-    agent.save_policy(path="trpo_policy_lunar_lander_0_001")
+    agent.save_policy(path=f"trpo_policy_lunar_lander_{d_kl}_{lr}_2")
 
     # Evaluate the trained agent
     agent.evaluate(num_episodes=10, render=True)
@@ -308,3 +311,77 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    # learning_rate=0.01, max_d_kl=0.001
+        # trpo_policy_lunar_lander_0_001
+        # Episode 100, Average Reward: -105.48
+        # Episode 200, Average Reward: -154.44
+        # Episode 300, Average Reward: -206.23
+        # Episode 400, Average Reward: -82.33
+        # Episode 500, Average Reward: -81.98
+        # Episode 600, Average Reward: -76.21
+        # Episode 700, Average Reward: -92.78
+        # Episode 800, Average Reward: -154.74
+        # Episode 900, Average Reward: -88.39
+        # Episode 1000, Average Reward: -68.60
+
+        # Evaluation over 10 episodes: -7.50
+
+        # take 2
+            # Episode 100, Average Reward: -120.13
+            # Episode 200, Average Reward: -118.93
+            # Episode 300, Average Reward: -70.71
+            # Episode 400, Average Reward: -91.91
+            # Episode 500, Average Reward: -74.62
+            # Episode 600, Average Reward: -153.01
+            # Episode 700, Average Reward: -115.81
+            # Episode 800, Average Reward: -120.99
+            # Episode 900, Average Reward: -95.68
+            # Episode 1000, Average Reward: -94.17
+
+            # Evaluation over 10 episodes: -106.39
+            
+        #take 3
+            # Episode 100, Average Reward: -116.62
+            # Episode 200, Average Reward: -109.14
+            # Episode 300, Average Reward: -188.12
+            # Episode 400, Average Reward: -90.90
+            # Episode 500, Average Reward: -75.31
+            # Episode 600, Average Reward: -61.43
+            # Episode 700, Average Reward: -66.53
+            # Episode 800, Average Reward: -59.20
+            # Episode 900, Average Reward: -79.10
+            # Episode 1000, Average Reward: -73.92
+
+            # Evaluation over 10 episodes: -84.81
+
+        # FINAL
+
+            # Episode 100, Average Reward: -308.09
+            # Episode 200, Average Reward: -330.71
+            # Episode 300, Average Reward: -273.56
+            # Episode 400, Average Reward: -114.36
+            # Episode 500, Average Reward: -89.45
+            # Episode 600, Average Reward: -84.24
+            # Episode 700, Average Reward: -80.64
+            # Episode 800, Average Reward: -75.64
+            # Episode 900, Average Reward: -77.76
+            # Episode 1000, Average Reward: -71.57
+
+            # Evaluation over 10 episodes: -33.37
+
+
+    # lr = 0.005
+    # d_kl = 0.001
+        # Episode 100, Average Reward: -175.84
+        # Episode 200, Average Reward: -133.50
+        # Episode 300, Average Reward: -180.00
+        # Episode 400, Average Reward: -179.46
+        # Episode 500, Average Reward: -212.85
+        # Episode 600, Average Reward: -205.71
+        # Episode 700, Average Reward: -57.38
+        # Episode 800, Average Reward: -87.41
+        # Episode 900, Average Reward: -141.61
+        # Episode 1000, Average Reward: -216.80
+
+        # Evaluation over 10 episodes: -337.63

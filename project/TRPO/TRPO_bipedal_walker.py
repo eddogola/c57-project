@@ -17,7 +17,6 @@ class ActorCriticNetwork(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, output_dim),
-            nn.Softmax(dim=1)
         )
         self.actor_log_std = nn.Parameter(torch.zeros(output_dim))  # Learnable log std
         # Critic
@@ -27,9 +26,9 @@ class ActorCriticNetwork(nn.Module):
             nn.Linear(hidden_dim, 1)  # Single value output for V(s)
         )
     
-    def forward_actor(self, x):
+    def forward_actor_mean(self, x):
         """Forward pass for the policy (actor)."""
-        return self.actor(self.shared(x))
+        return self.actor_mean(self.shared(x))
     
     def forward_critic(self, x):
         """Forward pass for the value function (critic)."""
@@ -46,8 +45,8 @@ class ActorCriticNetwork(nn.Module):
 class TRPO:
     def __init__(self, env_name='BipedalWalker-v3', hidden_dim=128, learning_rate=0.01, max_d_kl = 0.01):
         self.env = gym.make(env_name)
-        self.input_dim = self.env.observation_space.shape[0]   # 8 for LunarLander
-        self.output_dim = self.env.action_space.shape[0]  # 4 discrete actions
+        self.input_dim = self.env.observation_space.shape[0]   # 24 for Bipedal Walker
+        self.output_dim = self.env.action_space.shape[0]  # 4 continuous actions
         self.max_d_kl = max_d_kl
 
         # stuff for network
@@ -58,7 +57,7 @@ class TRPO:
         
         # Initialize policy network
         self.actor_critic = ActorCriticNetwork(self.input_dim, hidden_dim, self.output_dim)
-        self.actor_optimizer = optim.Adam(self.actor_critic.actor.parameters(), lr=learning_rate)
+        self.actor_optimizer = optim.Adam(self.actor_critic.actor_mean.parameters(), lr=learning_rate)
         self.critic_optimizer = optim.Adam(self.actor_critic.critic.parameters(), lr=learning_rate)
         # For tracking training progress
         self.episode_rewards = []
@@ -71,10 +70,12 @@ class TRPO:
 
     def select_action(self, state):
         """Select action using current policy"""
-        state = torch.tensor(state).float().unsqueeze(0)  # Turn state into a batch with a single element
-        mean, std, _ = self.actor_critic(state)
+        state = torch.tensor(state).float()  # Turn state into a batch with a single element
+        mean, log_std, _ = self.actor_critic(state)
+        std = torch.exp(log_std)
         distribution = Normal(mean, std)  # Create a distribution from probabilities for actions
-        return distribution.sample().item()
+        action = distribution.sample()
+        return action.detach().numpy()
 
     def update_critic(self, advantages):
         loss = .5 * (advantages ** 2).mean()  # MSE
@@ -99,8 +100,21 @@ class TRPO:
 
 
     def kl_div(self, p, q):
-        p = p.detach()
-        return (p * (p.log() - q.log())).sum(-1).mean()
+        # Extract parameters from the Normal distributions
+        mean_p, std_p = p.mean, p.stddev
+        mean_q, std_q = q.mean, q.stddev
+
+        # Detach `p`'s parameters to prevent gradient computation
+        mean_p = mean_p.detach()
+        std_p = std_p.detach()
+
+        # Compute KL divergence for Normal distributions analytically
+        kl = (
+            torch.log(std_q / std_p)
+            + (std_p**2 + (mean_p - mean_q)**2) / (2.0 * std_q**2)
+            - 0.5
+        )
+        return kl.sum(-1).mean()  # Sum over dimensions, then average over batch
 
 
     def flat_grad(self, y, x, retain_graph=False, create_graph=False):
@@ -140,7 +154,7 @@ class TRPO:
 
     def apply_update(self, grad_flattened):
         n = 0
-        for p in self.actor_critic.actor.parameters():
+        for p in self.actor_critic.actor_mean.parameters():
             numel = p.numel()
             g = grad_flattened[n:n + numel].view(p.shape)
             p.data += g
@@ -148,7 +162,7 @@ class TRPO:
 
     def update_agent(self):
         states = torch.cat([state for state in self.states], dim=0)
-        actions = torch.cat([action for action in self.actions], dim=0).flatten()
+        actions = torch.cat([action for action in self.actions], dim=0)
 
         advantages = [self.estimate_advantages(self.states[i], self.next_states[i][-1], self.rewards[i]) for i in range(len(self.rewards))]
         advantages = torch.cat(advantages, dim=0).flatten()
@@ -157,18 +171,24 @@ class TRPO:
         advantages = (advantages - advantages.mean()) / advantages.std()
 
         self.update_critic(advantages)
-        distribution, _ = self.actor_critic(states)
-        distribution = torch.distributions.utils.clamp_probs(distribution)
-        probabilities = distribution[range(distribution.shape[0]), actions]
+        mean, log_std, _ = self.actor_critic(states)
+        std = torch.exp(log_std)
+        distribution = Normal(mean, std)
+        # Compute log probabilities of the actions under the distribution
+        log_probabilities = distribution.log_prob(actions).sum(dim=-1)  # Sum over action dimensions if multi-dimensional
+
+        # # distribution = torch.distributions.utils.clamp_probs(distribution)
+    
+        # probabilities = distribution[range(distribution.scale[0]), actions]
 
         # Now we have all the data we need for the algorithm
 
         # We will calculate the gradient wrt to the new probabilities (surrogate function),
         # so second probabilities should be treated as a constant
-        L = self.surrogate_loss(probabilities, probabilities.detach(), advantages)
+        L = self.surrogate_loss(log_probabilities, log_probabilities.detach(), advantages)
         KL = self.kl_div(distribution, distribution)
 
-        parameters = list(self.actor_critic.actor.parameters())
+        parameters = list(self.actor_critic.actor_mean.parameters())
 
         g = self.flat_grad(L, parameters, retain_graph=True)
         d_kl = self.flat_grad(KL, parameters, create_graph=True)  # Create graph, because we will call backward() on it (for HVP)
@@ -184,11 +204,12 @@ class TRPO:
             self.apply_update(step)
 
             with torch.no_grad():
-                distribution_new, _ = self.actor_critic(states)
-                distribution_new = torch.distributions.utils.clamp_probs(distribution_new)
-                probabilities_new = distribution_new[range(distribution_new.shape[0]), actions]
+                mean_new, log_std_new, _ = self.actor_critic(states)
+                std_new = torch.exp(log_std_new)
+                distribution_new = Normal(mean_new, std_new)
+                log_probabilities_new = distribution_new.log_prob(actions).sum(dim=-1)
 
-                L_new = self.surrogate_loss(probabilities_new, probabilities, advantages)
+                L_new = self.surrogate_loss(log_probabilities_new, log_probabilities, advantages)
                 KL_new = self.kl_div(distribution, distribution_new)
 
             L_improvement = L_new - L
@@ -217,6 +238,8 @@ class TRPO:
                 with torch.no_grad():
                     action = self.select_action(state)
 
+                # print(type(action))
+                # print(action)
                 next_state, reward, done, _, _ = self.env.step(action)
 
                 # Collect samples
@@ -229,6 +252,7 @@ class TRPO:
 
             states = torch.stack([torch.from_numpy(state) for state in states], dim=0).float()
             next_states = torch.stack([torch.from_numpy(state) for state in next_states], dim=0).float()
+            actions = np.array(actions)
             actions = torch.as_tensor(actions).unsqueeze(1)
             rewards = torch.as_tensor(rewards).unsqueeze(1)
 
@@ -295,8 +319,8 @@ class TRPO:
 
 def main():
     # Create and train the agent
-    lr = 0.01
-    d_kl = 0.001
+    lr = 0.1
+    d_kl = 1
     agent = TRPO(hidden_dim=256, learning_rate=lr, max_d_kl=d_kl)
     agent.train(num_episodes=1000)
     
