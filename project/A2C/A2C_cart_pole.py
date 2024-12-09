@@ -22,7 +22,7 @@ class ActorCriticNetwork(nn.Module):
         self.critic = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 1)  # Single value output for V(s)
+            nn.Linear(hidden_dim, 1)
         )
     
     def forward(self, x):
@@ -32,7 +32,7 @@ class ActorCriticNetwork(nn.Module):
         return policy_probs, value
 
 class A2C:
-    def __init__(self, env_name='CartPole-v1', hidden_dim=128, learning_rate=0.01, gamma=0.99):
+    def __init__(self, env_name='CartPole-v1', hidden_dim=128, learning_rate=0.01, gamma=0.99, window_size=50, tolerance=1.0):
         self.env = gym.make(env_name)
         self.input_dim = self.env.observation_space.shape[0]
         self.output_dim = self.env.action_space.n
@@ -44,9 +44,12 @@ class A2C:
         
         # For tracking training progress
         self.episode_rewards = []
-        
+        self.rolling_avg_rewards = []
+        self.convergence_episode = None
+        self.window_size = window_size  # Rolling average window size
+        self.tolerance = tolerance  # Convergence tolerance
+    
     def select_action(self, state):
-        """Select action using current policy"""
         state = torch.FloatTensor(state)
         policy_probs, _ = self.actor_critic(state)
         distribution = Categorical(policy_probs)
@@ -54,7 +57,6 @@ class A2C:
         return action.item(), distribution.log_prob(action)
     
     def calculate_advantages(self, rewards, values, next_value, dones):
-        """Calculate the advantages and targets"""
         returns = []
         G = next_value
         for r, done in zip(reversed(rewards), reversed(dones)):
@@ -64,23 +66,25 @@ class A2C:
         advantages = returns - values
         return returns, advantages
     
+    def check_convergence(self):
+        """Check if the rolling average has converged."""
+        if len(self.rolling_avg_rewards) >= self.window_size:
+            recent_avg = np.mean(self.rolling_avg_rewards[-self.window_size:])
+            if abs(recent_avg - self.rolling_avg_rewards[-1]) <= self.tolerance:
+                return True
+        return False
+    
     def train(self, num_episodes=1000, print_interval=100):
-        """Train the agent using A2C"""
         for episode in range(num_episodes):
             state, _ = self.env.reset()
-            rewards = []
-            log_probs = []
-            values = []
-            dones = []
+            rewards, log_probs, values, dones = [], [], [], []
             episode_reward = 0
             
-            # Run one episode
             while True:
                 action, log_prob = self.select_action(state)
                 next_state, reward, terminated, truncated, _ = self.env.step(action)
                 done = terminated or truncated
                 
-                # Store episode data
                 _, value = self.actor_critic(torch.FloatTensor(state))
                 rewards.append(reward)
                 log_probs.append(log_prob)
@@ -94,7 +98,6 @@ class A2C:
                 
                 state = next_state
             
-            # Update policy and value network
             values = torch.cat(values).squeeze()
             returns, advantages = self.calculate_advantages(rewards, values, next_value.item(), dones)
             
@@ -108,78 +111,70 @@ class A2C:
             value_loss = torch.stack(value_loss).sum()
             loss = policy_loss + value_loss
             
-            # Backpropagation
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             
             self.episode_rewards.append(episode_reward)
+            rolling_avg = np.mean(self.episode_rewards[-self.window_size:])
+            self.rolling_avg_rewards.append(rolling_avg)
             
-            # Print progress
+            # Check for convergence
+            if self.convergence_episode is None and self.check_convergence():
+                self.convergence_episode = episode + 1
+            
             if (episode + 1) % print_interval == 0:
                 avg_reward = np.mean(self.episode_rewards[-print_interval:])
                 print(f"Episode {episode + 1}, Average Reward: {avg_reward:.2f}")
     
+    def plot_training_progress(self):
+        plt.figure(figsize=(10, 5))
+        plt.plot(self.episode_rewards, label='Episode Reward')
+        plt.plot(self.rolling_avg_rewards, label=f'Rolling Avg (window={self.window_size})', linewidth=2)
+        if self.convergence_episode:
+            plt.axvline(self.convergence_episode, color='r', linestyle='--', label='Convergence Point')
+        plt.title('Training Progress')
+        plt.xlabel('Episode')
+        plt.ylabel('Reward')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
     def evaluate(self, num_episodes=10, render=False):
-        """Evaluate the trained policy"""
-        if render:
-            env = gym.make('CartPole-v1', render_mode='human')
-        else:
-            env = self.env
-            
+        env = gym.make('CartPole-v1', render_mode='human') if render else self.env
         eval_rewards = []
-        
         for _ in range(num_episodes):
             state, _ = env.reset()
             episode_reward = 0
             done = False
-            
             while not done:
                 state = torch.FloatTensor(state)
                 with torch.no_grad():
                     policy_probs, _ = self.actor_critic(state)
-                action = torch.argmax(policy_probs).item()  # Use greedy action selection
-                
+                action = torch.argmax(policy_probs).item()
                 state, reward, terminated, truncated, _ = env.step(action)
                 done = terminated or truncated
                 episode_reward += reward
-            
             eval_rewards.append(episode_reward)
-        
         avg_reward = np.mean(eval_rewards)
         print(f"\nEvaluation over {num_episodes} episodes: {avg_reward:.2f}")
         return avg_reward
     
-    def plot_training_progress(self):
-        """Plot the training progress"""
-        plt.figure(figsize=(10, 5))
-        plt.plot(self.episode_rewards)
-        plt.title('Training Progress')
-        plt.xlabel('Episode')
-        plt.ylabel('Episode Reward')
-        plt.grid(True)
-        plt.show()
-    
-    def save_policy(self, path='a2c_policy.pth'):
-        """Save the policy network"""
+    def save_policy(self, path='a2c_cartpole.pth'):
         torch.save(self.actor_critic.state_dict(), path)
     
-    def load_policy(self, path='a2c_policy.pth'):
-        """Load a saved policy network"""
+    def load_policy(self, path='a2c_cartpole.pth'):
         self.actor_critic.load_state_dict(torch.load(path))
 
 def main():
-    # Create and train the agent
     agent = A2C(hidden_dim=128, learning_rate=0.01)
     agent.train(num_episodes=1000)
-    
-    # Plot training progress
+    if agent.convergence_episode:
+        print(f"Convergence achieved at episode: {agent.convergence_episode}")
+    else:
+        print("Convergence not achieved during training.")
     agent.plot_training_progress()
-    
-    # Evaluate the trained agent
-    agent.evaluate(num_episodes=10, render=True)
-    
-    # Save the trained policy
+    agent.evaluate(num_episodes=10, render=False)
     agent.save_policy()
 
 if __name__ == "__main__":
