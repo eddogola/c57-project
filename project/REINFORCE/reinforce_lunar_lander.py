@@ -24,7 +24,7 @@ class PolicyNetwork(nn.Module):
 
 
 class REINFORCE:
-    def __init__(self, env_name='LunarLander-v2', hidden_dim=128, learning_rate=0.001, gamma=0.99, window_size=100, gradient_threshold=0.005):
+    def __init__(self, env_name='LunarLander-v3', hidden_dim=128, learning_rate=0.001, gamma=0.99, window_size=100, gradient_threshold=0.005):
         self.env = gym.make(env_name)
         self.input_dim = self.env.observation_space.shape[0]
         self.output_dim = self.env.action_space.n
@@ -154,7 +154,7 @@ class REINFORCE:
 
 
 def main():
-    agent = REINFORCE(env_name="LunarLander-v2")
+    agent = REINFORCE(env_name="LunarLander-v3")
     agent.train(num_episodes=2000)
     if agent.convergence_episode:
         print(f"Convergence achieved at episode {agent.convergence_episode}.")
